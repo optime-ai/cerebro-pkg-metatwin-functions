@@ -1,0 +1,5 @@
+twine==5.0.0
+wheel==0.42.0
+build==1.1.1
+pytest==7.4.0
+pytest-mock==3.10.0

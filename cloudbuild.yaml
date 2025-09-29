@@ -1,0 +1,256 @@
+steps:
+  # Determine version based on branch and tags
+  - name: 'gcr.io/cloud-builders/git'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        # Configure git
+        git config --global user.email "cloud-build@$PROJECT_ID.iam.gserviceaccount.com"
+        git config --global user.name "Cloud Build"
+
+        echo "Building for branch: $BRANCH_NAME"
+
+        # Clone with token for push access
+        git clone https://$$GITHUB_TOKEN@github.com/$_GITHUB_OWNER/$_GITHUB_REPO.git /workspace/repo
+        cd /workspace/repo
+
+        if [[ "$BRANCH_NAME" == "main" ]]; then
+          echo "=== RELEASE BUILD ==="
+
+          git checkout main
+
+          # Get all tags sorted by version
+          ALL_TAGS=$(git tag -l "v*" | sort -V)
+          echo "All tags:"
+          echo "$$ALL_TAGS"
+
+          # Find the HIGHEST RC tag (any version)
+          LATEST_RC=$(echo "$$ALL_TAGS" | grep "rc" | tail -1)
+
+          if [[ -n "$$LATEST_RC" ]]; then
+            # We have an RC, extract version and publish it
+            VERSION=$(echo "$$LATEST_RC" | sed 's/^v//' | sed 's/-rc[0-9]*$//')
+            echo "Publishing from RC: $$LATEST_RC -> $$VERSION"
+          else
+            # No RC at all, find latest release and bump
+            LATEST_RELEASE=$(echo "$$ALL_TAGS" | grep -v "rc" | tail -1)
+
+            if [[ -n "$$LATEST_RELEASE" ]]; then
+              # Bump patch version
+              RELEASE_VERSION=$(echo "$$LATEST_RELEASE" | sed 's/^v//')
+              IFS='.' read -r MAJOR MINOR PATCH <<< "$$RELEASE_VERSION"
+              NEXT_PATCH=$$((PATCH + 1))
+              VERSION="$$MAJOR.$$MINOR.$$NEXT_PATCH"
+              echo "No RC found, bumping from $$LATEST_RELEASE to $$VERSION"
+            else
+              echo "ERROR: No tags found at all! Create RC through staging first."
+              exit 1
+            fi
+          fi
+
+          echo "Release version: $$VERSION"
+
+          # Save version for next steps
+          echo "$$VERSION" > /workspace/version.txt
+          echo "RELEASE" > /workspace/build_type.txt
+
+          # Create .version file for build
+          echo "$$VERSION" > .version
+
+          # Copy files to workspace
+          cp -r . /workspace/source
+
+        elif [[ "$BRANCH_NAME" == "staging" ]]; then
+          echo "=== STAGING BUILD (RC) ==="
+
+          git checkout staging
+
+          # Check last commit message for version override [x.y.z] or [vx.y.z]
+          LAST_COMMIT_MESSAGE=$(git log -1 --pretty=%B)
+          echo "Last commit message: $$LAST_COMMIT_MESSAGE"
+
+          # Extract version from commit message if present (with or without v prefix)
+          if [[ "$$LAST_COMMIT_MESSAGE" =~ \[v?([0-9]+\.[0-9]+\.[0-9]+)\] ]]; then
+            BASE_VERSION="${BASH_REMATCH[1]}"
+            echo "Version from commit message: $$BASE_VERSION"
+            # This is a new version, start with rc1
+            RC_VERSION="$${BASE_VERSION}-rc1"
+          else
+            # No version in commit, determine from existing tags
+            echo "No version in commit message, checking existing tags..."
+
+            # Get all tags
+            ALL_TAGS=$(git tag -l "v*" | sort -V)
+            echo "All tags:"
+            echo "$$ALL_TAGS"
+
+            if [[ -z "$$ALL_TAGS" ]]; then
+              # No tags at all, start with default
+              echo "No tags found, starting with 1.0.1-rc1"
+              RC_VERSION="1.0.1-rc1"
+            else
+              # Extract all unique version numbers (without rc suffix)
+              ALL_VERSIONS=$(echo "$$ALL_TAGS" | sed 's/^v//' | sed 's/-rc[0-9]*$//' | sort -uV)
+              HIGHEST_VERSION=$(echo "$$ALL_VERSIONS" | tail -1)
+              echo "Highest version number: $$HIGHEST_VERSION"
+
+              # Check if this version has a release tag
+              HAS_RELEASE=$(echo "$$ALL_TAGS" | grep -E "^v$${HIGHEST_VERSION}$" || echo "")
+
+              if [[ -n "$$HAS_RELEASE" ]]; then
+                # This version was released, start next patch
+                IFS='.' read -r MAJOR MINOR PATCH <<< "$$HIGHEST_VERSION"
+                NEXT_PATCH=$$((PATCH + 1))
+                RC_VERSION="$$MAJOR.$$MINOR.$${NEXT_PATCH}-rc1"
+                echo "Version $$HIGHEST_VERSION was released, starting: $$RC_VERSION"
+              else
+                # This version only has RCs, continue the sequence
+                LATEST_RC=$(echo "$$ALL_TAGS" | grep "v$${HIGHEST_VERSION}-rc" | tail -1)
+                if [[ -n "$$LATEST_RC" ]]; then
+                  CURRENT_RC=$(echo "$$LATEST_RC" | grep -oE 'rc[0-9]+' | sed 's/rc//')
+                  NEXT_RC=$$((CURRENT_RC + 1))
+                  RC_VERSION="$${HIGHEST_VERSION}-rc$${NEXT_RC}"
+                  echo "Continuing RC sequence: $$RC_VERSION"
+                else
+                  # Shouldn't happen, but start rc1
+                  RC_VERSION="$${HIGHEST_VERSION}-rc1"
+                  echo "Starting RC sequence: $$RC_VERSION"
+                fi
+              fi
+            fi
+          fi
+
+          echo "RC Version: $$RC_VERSION"
+
+          # Save version for next steps
+          echo "$$RC_VERSION" > /workspace/version.txt
+          echo "STAGING" > /workspace/build_type.txt
+
+          # Create .version file for build (Python removes hyphen anyway)
+          VERSION_FOR_BUILD=$(echo "$$RC_VERSION" | sed 's/-rc/rc/')
+          echo "$$VERSION_FOR_BUILD" > .version
+          echo "Version for build: $$VERSION_FOR_BUILD"
+
+          # Copy files to workspace
+          cp -r . /workspace/source
+
+        else
+          echo "=== DEVELOPMENT BUILD ==="
+          echo "Branch $BRANCH_NAME is not configured for automatic deployment"
+          echo "SKIP" > /workspace/build_type.txt
+          exit 0
+        fi
+    secretEnv: ['GITHUB_TOKEN']
+
+  # Build the package
+  - name: 'python:3.10'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        BUILD_TYPE=$(cat /workspace/build_type.txt)
+        if [[ "$$BUILD_TYPE" == "SKIP" ]]; then
+          echo "Skipping build for development branch"
+          exit 0
+        fi
+
+        cd /workspace/source
+        echo "Building version: $$(cat .version)"
+
+        pip install --upgrade pip
+        pip install build twine
+        python -m build
+
+  # Upload to Artifact Registry
+  - name: 'python:3.10'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        BUILD_TYPE=$(cat /workspace/build_type.txt)
+        if [[ "$$BUILD_TYPE" == "SKIP" ]]; then
+          echo "Skipping upload for development branch"
+          exit 0
+        fi
+
+        cd /workspace/source
+        pip install twine keyrings.google-artifactregistry-auth
+
+        echo "Uploading to repository: $_ARTIFACT_REGISTRY_URL"
+        echo "Packages to upload:"
+        ls -la dist/
+        python -m twine upload --repository-url $_ARTIFACT_REGISTRY_URL dist/*
+
+  # Create Git tag
+  - name: 'gcr.io/cloud-builders/git'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        BUILD_TYPE=$(cat /workspace/build_type.txt)
+        if [[ "$$BUILD_TYPE" == "SKIP" ]]; then
+          echo "Skipping tagging for development branch"
+          exit 0
+        fi
+
+        VERSION=$(cat /workspace/version.txt)
+        cd /workspace/repo
+
+        # For tags, always use hyphen format (v1.0.1-rc1)
+        # But VERSION might be without hyphen for Python compatibility
+        if [[ "$$VERSION" =~ rc[0-9]+$ ]] && [[ ! "$$VERSION" =~ -rc ]]; then
+          # Add hyphen if missing
+          TAG_VERSION=$(echo "$$VERSION" | sed 's/rc/-rc/')
+        else
+          TAG_VERSION="$$VERSION"
+        fi
+
+        if [[ "$$BUILD_TYPE" == "RELEASE" ]]; then
+          TAG_MESSAGE="Release v$$TAG_VERSION"
+        elif [[ "$$BUILD_TYPE" == "STAGING" ]]; then
+          TAG_MESSAGE="Release Candidate v$$TAG_VERSION"
+        fi
+
+        echo "Creating tag v$$TAG_VERSION..."
+        git tag -a "v$$TAG_VERSION" -m "$$TAG_MESSAGE"
+        git push https://$$GITHUB_TOKEN@github.com/$_GITHUB_OWNER/$_GITHUB_REPO.git "v$$TAG_VERSION"
+    secretEnv: ['GITHUB_TOKEN']
+
+  # Send Slack notification
+  - name: 'gcr.io/cloud-builders/curl'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        BUILD_TYPE=$(cat /workspace/build_type.txt)
+        if [[ "$$BUILD_TYPE" == "SKIP" ]]; then
+          echo "Skipping notification for development branch"
+          exit 0
+        fi
+
+        VERSION=$(cat /workspace/version.txt)
+
+        if [[ "$$BUILD_TYPE" == "RELEASE" ]]; then
+          MESSAGE="🚀 New Release of package $_GITHUB_REPO, version: v$$VERSION"
+        elif [[ "$$BUILD_TYPE" == "STAGING" ]]; then
+          MESSAGE="🧪 New RC of package $_GITHUB_REPO, version: v$$VERSION"
+        fi
+
+        # Send notification only if webhook URL is provided
+        if [[ -n "$_SLACK_WEBHOOK_URL" ]]; then
+          curl -X POST -H 'Content-type: application/json' \
+            --data "{\"text\": \"$$MESSAGE\"}" \
+            "$_SLACK_WEBHOOK_URL"
+        else
+          echo "No Slack webhook configured, skipping notification"
+        fi
+
+availableSecrets:
+  secretManager:
+    - versionName: projects/$PROJECT_ID/secrets/$_GITHUB_ACCESS_TOKEN/versions/latest
+      env: 'GITHUB_TOKEN'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  substitution_option: 'ALLOW_LOOSE'
