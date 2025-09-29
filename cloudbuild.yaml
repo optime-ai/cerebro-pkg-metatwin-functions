@@ -55,11 +55,11 @@ steps:
           echo "$$VERSION" > /workspace/version.txt
           echo "RELEASE" > /workspace/build_type.txt
 
-          # Create .version file for build
-          echo "$$VERSION" > .version
-
-          # Copy files to workspace
+          # Copy files to workspace FIRST
           cp -r . /workspace/source
+
+          # Create .version file for build in the source directory
+          echo "$$VERSION" > /workspace/source/.version
 
         elif [[ "$BRANCH_NAME" == "staging" ]]; then
           echo "=== STAGING BUILD (RC) ==="
@@ -127,13 +127,13 @@ steps:
           echo "$$RC_VERSION" > /workspace/version.txt
           echo "STAGING" > /workspace/build_type.txt
 
+          # Copy files to workspace FIRST
+          cp -r . /workspace/source
+
           # Create .version file for build (Python removes hyphen anyway)
           VERSION_FOR_BUILD=$(echo "$$RC_VERSION" | sed 's/-rc/rc/')
-          echo "$$VERSION_FOR_BUILD" > .version
+          echo "$$VERSION_FOR_BUILD" > /workspace/source/.version
           echo "Version for build: $$VERSION_FOR_BUILD"
-
-          # Copy files to workspace
-          cp -r . /workspace/source
 
         else
           echo "=== DEVELOPMENT BUILD ==="
