@@ -58,8 +58,8 @@ steps:
           # Copy files to workspace FIRST
           cp -r . /workspace/source
 
-          # Create .version file for build in the source directory
-          echo "$$VERSION" > /workspace/source/.version
+          # Replace {{VERSION}} in setup.py with actual version
+          sed -i "s/{{VERSION}}/$$VERSION/g" /workspace/source/setup.py
 
         elif [[ "$BRANCH_NAME" == "staging" ]]; then
           echo "=== STAGING BUILD (RC) ==="
@@ -130,9 +130,11 @@ steps:
           # Copy files to workspace FIRST
           cp -r . /workspace/source
 
-          # Create .version file for build (Python removes hyphen anyway)
+          # Create version for build (Python format without hyphen)
           VERSION_FOR_BUILD=$(echo "$$RC_VERSION" | sed 's/-rc/rc/')
-          echo "$$VERSION_FOR_BUILD" > /workspace/source/.version
+
+          # Replace {{VERSION}} in setup.py with actual version
+          sed -i "s/{{VERSION}}/$$VERSION_FOR_BUILD/g" /workspace/source/setup.py
           echo "Version for build: $$VERSION_FOR_BUILD"
 
         else

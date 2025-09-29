@@ -1,17 +1,9 @@
 from setuptools import setup, find_packages
 import os
 
-def get_version():
-    version_file = os.path.join(os.path.dirname(__file__), '.version')
-    try:
-        with open(version_file, 'r') as f:
-            return f.read().strip()
-    except FileNotFoundError:
-        return '1.0.0'
-
 setup(
     name='cerebro-pkg-metatwin-functions',
-    version=get_version(),
+    version='{{VERSION}}',
     packages=find_packages(exclude=['tests*', 'examples*']),
     description='Function-as-a-Service SDK for Cerebro MetaTwin Functions',
     long_description=open('README.md').read() if os.path.exists('README.md') else '',
