@@ -177,3 +177,9 @@ Thumbs.db
 *.log
 **/.DS_Store
 *.icloud
+tmp/
+
+# Documentation files (except CLAUDE.md)
+*.md
+!CLAUDE.md
+!/rabbitmq-docker/README.md
